@@ -1,0 +1,462 @@
+FROM ubuntu:14.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG THEANO_VERSION=rel-0.8.2
+ARG TENSORFLOW_VERSION=0.6.0
+ARG TENSORFLOW_ARCH=gpu
+ARG KERAS_VERSION=1.2.0
+ARG LASAGNE_VERSION=v0.1
+ARG TORCH_VERSION=latest
+ARG CAFFE_VERSION=master
+ARG PYTORCH_VERSION=0.3.0
+
+## install basic dependencies
+RUN apt-get update && apt-get install -y \
+	curl \
+    git \
+    g++ \
+    libssl-dev \
+    software-properties-common \
+    sudo \
+    wget
+
+## install nvidia-375-driver
+RUN add-apt-repository ppa:graphics-drivers/ppa
+RUN apt-get update && apt-get install -y nvidia-375
+
+## install cuda8.0
+RUN wget https://developer.nvidia.com/compute/cuda/8.0/Prod2/local_installers/cuda-repo-ubuntu1604-8-0-local-ga2_8.0.61-1_amd64-deb
+RUN yes | dpkg -i ./cuda-repo-ubuntu1604-8-0-local-ga2_8.0.61-1_amd64-deb
+RUN apt-get update && apt-get install -y cuda-toolkit-8-0
+RUN rm cuda-repo-ubuntu1604-8-0-local-ga2_8.0.61-1_amd64-deb
+
+ENV LIBRARY_PATH="/usr/local/cuda/lib64/stubs:$LIBRARY_PATH"
+ENV LD_LIBRARY_PATH="/usr/local/cuda-8.0/lib64:$LD_LIBRARY_PATH"
+ENV PATH="/usr/local/cuda/bin:$PATH"
+
+#CuDNN installation cudnn6
+RUN wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1604/x86_64/libcudnn6_6.0.21-1+cuda8.0_amd64.deb && \
+	wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1604/x86_64/libcudnn6-dev_6.0.21-1+cuda8.0_amd64.deb
+RUN yes | dpkg -i ./libcudnn6_6.0.21-1+cuda8.0_amd64.deb && \
+	yes | dpkg -i ./libcudnn6-dev_6.0.21-1+cuda8.0_amd64.deb
+RUN apt-get update && apt-get install -y libcudnn6-dev
+RUN rm libcudnn6_6.0.21-1+cuda8.0_amd64.deb && \
+	rm libcudnn6-dev_6.0.21-1+cuda8.0_amd64.deb
+
+## install pip
+RUN add-apt-repository ppa:deadsnakes/ppa
+RUN apt-get update && apt-get install -y \
+    python3.3-dev \
+	python3.3-tk \
+	python3.3
+
+# ## make python3.3 default
+# RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.3 100 && \
+#     update-alternatives --install /usr/bin/python python /usr/bin/python2.7 75
+
+RUN apt-get update && apt-get install -y \
+	libffi-dev \
+	libjpeg-dev \
+	libpng-dev \
+	zlib1g-dev
+
+# Install pip see https://pip.pypa.io/en/stable/news/ for python compatibility
+RUN curl -O https://bootstrap.pypa.io/get-pip.py && \
+	python get-pip.py pip==10.0.1 && \
+	rm get-pip.py
+
+# conda required for pytorch installation
+# see https://docs.anaconda.com/anaconda/packages/oldpkglists/ to get compatibility with python x.x versions
+RUN wget https://repo.anaconda.com/archive/Anaconda-2.3.0-Linux-x86_64.sh && \
+	yes | bash Anaconda-2.3.0-Linux-x86_64.sh -b && \
+	rm Anaconda-2.3.0-Linux-x86_64.sh
+ENV PATH="/root/anaconda/bin:${PATH}"
+
+#install python 3.3
+RUN conda install python=3.3
+
+## installs and updates conda packages to the latest compatible versions
+RUN conda update -y conda anaconda
+
+## pytorch dependencies
+RUN conda install numpy pyyaml mkl setuptools cmake cffi
+
+# Add LAPACK support for the GPU
+RUN conda install -c soumith magma-cuda80
+## pytorch installation
+RUN git clone https://github.com/pytorch/pytorch.git
+RUN cd pytorch && git checkout "v$PYTORCH_VERSION"
+RUN cd pytorch && git submodule sync && git submodule update --init --recursive
+RUN python -m pip install pathlib
+RUN export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
+RUN cd pytorch && python setup.py install
+
+RUN apt-get update
+
+# Install Torch
+RUN git clone --recursive https://github.com/torch/distro.git /root/torch && \
+	cd /root/torch && \
+	bash install-deps && \
+	yes | bash ./install.sh
+	
+# Export the LUA evironment variables manually
+ENV LUA_PATH='/root/.luarocks/share/lua/5.1/?.lua;/root/.luarocks/share/lua/5.1/?/init.lua;/root/torch/install/share/lua/5.1/?.lua;/root/torch/install/share/lua/5.1/?/init.lua;./?.lua;/root/torch/install/share/luajit-2.1.0-beta1/?.lua;/usr/local/share/lua/5.1/?.lua;/usr/local/share/lua/5.1/?/init.lua' \
+	LUA_CPATH='/root/.luarocks/lib/lua/5.1/?.so;/root/torch/install/lib/lua/5.1/?.so;./?.so;/usr/local/lib/lua/5.1/?.so;/usr/local/lib/lua/5.1/loadall.so' \
+	PATH=/root/torch/install/bin:$PATH \
+	LD_LIBRARY_PATH=/root/torch/install/lib:$LD_LIBRARY_PATH \
+	DYLD_LIBRARY_PATH=/root/torch/install/lib:$DYLD_LIBRARY_PATH
+ENV LUA_CPATH='/root/torch/install/lib/?.so;$LUA_CPATH'
+
+## Dependencies of caffe and torch
+RUN apt-get update && apt-get install -y \
+		libboost-all-dev \
+		libgflags-dev \
+		libgoogle-glog-dev \
+		libhdf5-serial-dev \
+		libleveldb-dev \
+		liblmdb-dev \
+		libopencv-dev \
+		libprotobuf-dev \
+		libsnappy-dev \
+		protobuf-compiler \
+		libopenblas-dev \
+		&& \
+	apt-get clean && \
+	apt-get autoremove && \
+	rm -rf /var/lib/apt/lists/*
+
+# Install the latest versions of nn, cutorch, cunn, cuDNN bindings and iTorch
+RUN luarocks install nn && \
+	luarocks install cutorch && \
+	luarocks install cunn && \
+    luarocks install loadcaffe
+
+RUN cd /root && git clone https://github.com/soumith/cudnn.torch.git && cd cudnn.torch && \
+	git checkout R4 && \
+	luarocks make
+
+# Install the latest version of iTorch and its dependencies
+#RUN apt-get install -y prosody libzmq3-dev libssl1.0-dev python-zmq
+
+RUN	luarocks install lbase64 && \
+	luarocks install luacrypto && \
+	luarocks install uuid && \
+	luarocks install lzmq
+
+RUN	cd /root && git clone https://github.com/facebook/iTorch.git && \
+	cd iTorch && \
+	luarocks make
+
+# Install Theano and set up Theano config (.theanorc) for CUDA and OpenBLAS
+RUN pip --no-cache-dir install git+git://github.com/Theano/Theano.git@${THEANO_VERSION} && \
+	\
+	echo "[global]\ndevice=gpu\nfloatX=float32\noptimizer_including=cudnn\nmode=FAST_RUN \
+		\n[lib]\ncnmem=0.95 \
+		\n[nvcc]\nfastmath=True \
+		\n[blas]\nldflag = -L/usr/lib/openblas-base -lopenblas \
+		\n[DebugMode]\ncheck_finite=1" \
+	> /root/.theanorc
+
+## install pylearn2
+RUN git clone git://github.com/lisa-lab/pylearn2.git && \
+     cd pylearn2 && \
+     python setup.py develop
+ENV PYLEARN2_DATA_PATH=/data/lisa/data
+
+## install lasagne needs 3.4
+## https://lasagne.readthedocs.io/en/latest/user/installation.html#prerequisites
+# RUN pip --no-cache-dir install git+git://github.com/Lasagne/Lasagne.git@${LASAGNE_VERSION}
+
+## caffe needs gcc5
+RUN add-apt-repository ppa:ubuntu-toolchain-r/test
+RUN apt-get update && apt-get install -y gcc-5 g++-5
+
+# assign higher priority to gcc-5 caffe uses gcc-5
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 100 && \
+	update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 75
+
+RUN update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-5 100 && \
+	update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.8 75
+
+## Dependencies of caffe
+RUN apt-get update && apt-get install -y \
+		libboost-all-dev \
+		libgflags-dev \
+		libgoogle-glog-dev \
+		libhdf5-serial-dev \
+		libleveldb-dev \
+		liblmdb-dev \
+		libopencv-dev \
+		libprotobuf-dev \
+		libsnappy-dev \
+		protobuf-compiler \
+		libopenblas-dev \
+		&& \
+	apt-get clean && \
+	apt-get autoremove && \
+	rm -rf /var/lib/apt/lists/*
+RUN apt-get install libboost-python-dev
+RUN conda install -y pytest
+# Install Caffe
+RUN git clone -b ${CAFFE_VERSION} --depth 1 https://github.com/thomkallor/caffe.git /root/caffe && \
+	cd /root/caffe && \
+	git pull origin master && \
+	#git pull origin ${CAFFE_VERSION} && \
+	#cat python/requirements.txt | xargs -n1 python -m pip install && \
+	cp Makefile.config.example Makefile.config && \
+	#mkdir build && cd build && \
+	#cmake -DUSE_CUDNN=1 -DBLAS=Open .. && \
+	make -j"$(nproc)" all
+
+## Uncomment it if the system has gpu
+RUN cd /root/caffe && \
+	make test && \
+	make runtest
+
+# Set up Caffe environment variables
+ENV CAFFE_ROOT=/root/caffe
+ENV PYCAFFE_ROOT=$CAFFE_ROOT/python
+ENV PYTHONPATH=$PYCAFFE_ROOT:$PYTHONPATH \
+	PATH=$CAFFE_ROOT/build/tools:$PYCAFFE_ROOT:$PATH
+RUN echo "$CAFFE_ROOT/build/lib" >> /etc/ld.so.conf.d/caffe.conf && ldconfig
+
+#RUN cd /root/caffe && make test
+
+
+# Set up Caffe environment variables
+# ENV CAFFE_ROOT=/root/caffe
+# ENV PYCAFFE_ROOT=$CAFFE_ROOT/python
+# ENV PYTHONPATH=$PYCAFFE_ROOT:$PYTHONPATH \
+# 	PATH=$CAFFE_ROOT/build/tools:$PYCAFFE_ROOT:$PATH
+# RUN echo "$CAFFE_ROOT/build/lib" >> /etc/ld.so.conf.d/caffe.conf && ldconfig
+
+
+# ## install cuda 7.0 and cudnn6.5 for tensorflow
+# RUN wget http://developer.download.nvidia.com/compute/cuda/7_0/Prod/local_installers/rpmdeb/cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+# RUN yes | dpkg -i ./cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+# RUN apt-get update && apt-get install -y cuda-toolkit-7-0
+# RUN rm cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+# ENV LD_LIBRARY_PATH="/usr/local/cuda-7.0/lib64:$LD_LIBRARY_PATH"
+
+# RUN git clone https://github.com/thomkallor/cudnn-6.5.git
+# ENV LD_LIBRARY_PATH="/root/cudnn-6.5:$LD_LIBRARY_PATH"
+
+
+## pytorch dependencies
+
+# Add SNI support to Python
+#install useful packages
+#RUN apt-get install -y python3-pip
+# RUN python -m pip install virtualenv
+# RUN python -m pip install setuptools==39.2.0
+# RUN python -m pip install \
+# 		pycparser==2.14 \
+#         cffi==1.14.0 \
+#         olefile==0.44 \
+#         pyopenssl==17.2.0 \
+# 		ndg-httpsclient==0.4.4 \
+# 		pyasn1 \
+# 		Cython \
+# 		path.py \
+# 		numpy==1.10.4 \
+# 		Pillow==4.3.0 \
+# 		pygments \
+# 		sphinx==1.6.7 \
+#         wheel
+# RUN python -m pip install scikit-build
+# RUN wget https://github.com/Kitware/CMake/releases/download/v3.17.3/cmake-3.17.3.tar.gz && \
+# 	tar -xvf cmake-3.17.3.tar.gz
+# RUN cd cmake-3.17.3 && ./bootstrap && make && make install
+#RUN cd cmake-3.17.3 && ./bootstrap && make && make install
+#RUN rm -rf ./cmake-3.17.3 cmake-3.17.3.tar.gz
+# RUN python -m pip install cmake
+## pytorch dependencies
+
+
+# RUN python -m pip install mkl-include
+# RUN python -m pip install \
+#     ninja \
+# 	pyyaml==3.13
+
+	# mkl \
+	# mkl-include \
+	# cmake
+
+# RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.3 75 && \
+#     update-alternatives --install /usr/bin/python python /usr/bin/python2.7 100
+
+# RUN apt-get install -y \
+# 	python-dev \
+# 	python-tk \
+# 	python-pip
+# RUN pip install \
+# 	mkl \
+# 	mkl-include
+
+# RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.3 100 && \
+#     update-alternatives --install /usr/bin/python python /usr/bin/python2.7 75
+
+
+# # install pytorch
+# RUN git clone https://github.com/pytorch/pytorch.git
+# RUN cd pytorch && git checkout "v$PYTORCH_VERSION"
+# RUN cd pytorch && git submodule sync && git submodule update --init --recursive
+# RUN cd pytorch && python setup.py install
+
+
+# # Add SNI support to Python
+# RUN  python -m pip --no-cache-dir install \
+#         pycparser==2.10 \
+#         cffi==1.14.0 \
+#         olefile==0.44 \
+#         pyopenssl==17.2.0
+
+
+# RUN add-apt-repository ppa:deadsnakes/ppa
+
+# ## depencies for torch (python-software-properties)
+# RUN apt-get install -y \
+#         python-apt \
+#         python-pycurl 
+
+# RUN wget http://archive.ubuntu.com/ubuntu/pool/universe/s/software-properties/python-software-properties_0.96.20_all.deb
+# RUN dpkg -i python-software-properties_0.96.20_all.deb
+# RUN apt-get install -y \
+#         python-software-properties
+
+# RUN apt-get install -y \
+#     python3.3-dev \
+# 	python3.3-tk
+
+# RUN apt-get install -y build-essential libssl-dev
+
+## Dependencies of caffe
+# RUN apt-get update && apt-get install -y \
+# 		libboost-all-dev \
+# 		libgflags-dev \
+# 		libgoogle-glog-dev \
+# 		libhdf5-serial-dev \
+# 		libleveldb-dev \
+# 		liblmdb-dev \
+# 		libopencv-dev \
+# 		libprotobuf-dev \
+# 		libsnappy-dev \
+# 		protobuf-compiler \
+# 		libopenblas-dev \
+# 		&& \
+# 	apt-get clean && \
+# 	apt-get autoremove && \
+# 	rm -rf /var/lib/apt/lists/*
+
+# RUN python -m pip --no-cache-dir install \
+# 		jupyter \
+#         ipykernel
+
+# ## not needed
+# RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.3 100 && \
+#     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 75
+# ## notneeded
+
+# ## for pytorch
+# RUN python -m pip --no-cache-dir install \
+#     ninja pyyaml mkl mkl-include setuptools cmake
+
+# RUN apt-get update && apt-get install libffi-dev
+# # Add SNI support to Python
+# RUN  python -m pip --no-cache-dir install \
+#         pycparser==2.10 \
+#         cffi==1.14.0 \
+#         olefile==0.44 \
+#         pyopenssl==17.2.0
+
+# RUN python -m pip --no-cache-dir install \
+# 		ndg-httpsclient==0.5.0 \
+# 		pyasn1 \
+# 		Cython \
+# 		jupyter \
+# 		path.py \
+# 		Pillow==4 \
+#         wheel
+
+# RUN python -m pip --no-cache-dir install \
+#     numpy==1.10.4
+
+# # update alternatives of gcc, gcc-4.9 required for torch installation
+
+# RUN wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/libasan1_4.9.3-13ubuntu2_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/cpp-4.9_4.9.3-13ubuntu2_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/libgcc-4.9-dev_4.9.3-13ubuntu2_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/main/m/mpfr4/libmpfr4_3.1.4-1_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/gcc-4.9-base_4.9.3-13ubuntu2_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/gcc-4.9_4.9.3-13ubuntu2_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/libstdc++-4.9-dev_4.9.3-13ubuntu2_amd64.deb && \
+# 	wget http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-4.9/g++-4.9_4.9.3-13ubuntu2_amd64.deb
+
+# RUN dpkg -i libmpfr4_3.1.4-1_amd64.deb \
+# 	gcc-4.9-base_4.9.3-13ubuntu2_amd64.deb \
+# 	cpp-4.9_4.9.3-13ubuntu2_amd64.deb \
+# 	libasan1_4.9.3-13ubuntu2_amd64.deb \
+# 	libgcc-4.9-dev_4.9.3-13ubuntu2_amd64.deb \
+# 	gcc-4.9_4.9.3-13ubuntu2_amd64.deb \
+# 	libstdc++-4.9-dev_4.9.3-13ubuntu2_amd64.deb \
+# 	g++-4.9_4.9.3-13ubuntu2_amd64.deb
+
+# RUN rm libmpfr4_3.1.4-1_amd64.deb \
+# 	gcc-4.9-base_4.9.3-13ubuntu2_amd64.deb \
+# 	cpp-4.9_4.9.3-13ubuntu2_amd64.deb \
+# 	libasan1_4.9.3-13ubuntu2_amd64.deb \
+# 	libgcc-4.9-dev_4.9.3-13ubuntu2_amd64.deb \
+# 	gcc-4.9_4.9.3-13ubuntu2_amd64.deb \
+# 	libstdc++-4.9-dev_4.9.3-13ubuntu2_amd64.deb \
+# 	g++-4.9_4.9.3-13ubuntu2_amd64.deb
+
+# RUN apt-get update && apt-get install -y gcc-5 g++-5
+
+# # assign higher priority to gcc-5 caffe uses gcc-5
+# RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.9 100 && \
+# 	update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 75 && \
+# 	update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-7 50
+
+# # assign higher priority to gcc-5 caffe uses gcc-5
+# RUN update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.9 100 && \
+# 	update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-5 75 && \
+# 	update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-7 50
+
+# #install pytorch gcc4
+# RUN git clone --recursive https://github.com/pytorch/pytorch.git
+# RUN cd pytorch && git checkout "v$PYTORCH_VERSION"
+# RUN cd pytorch && git submodule sync && git submodule update --init --recursive
+
+# RUN cd pytorch && python setup.py install
+
+
+#for pytorch
+
+# Install Torch
+# RUN git clone https://github.com/torch/distro.git /root/torch --recursive
+
+# RUN cd /root/torch && bash install-deps
+
+# RUN yes no | ./install.sh
+
+# RUN wget https://www.python.org/ftp/python/3.8.3/Python-3.8.3.tar.xz
+# RUN apt-get install -y gcc+ 
+# RUN apt-get install -y cmake
+
+# RUN tar -xf Python-3.8.3.tar.xz && \
+#     cd Python-3.8.3 && \
+#     ./configure --enable-optimizations && \
+#     make -j 8 && \
+#     make altinstall
+
+# RUN rm -rf Python-3.8.3.tar.xz ./Python-3.8.3
+
+# Install pip
+
+# RUN add-apt-repository ppa:deadsnakes/ppa
+# RUN apt-get update && apt-get install python3.6
+
+
+# RUN curl -O https://bootstrap.pypa.io/get-pip.py && \
+# 	python3 get-pip.py && \
+# 	rm get-pip.py

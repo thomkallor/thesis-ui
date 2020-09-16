@@ -1,0 +1,120 @@
+FROM nvidia/cuda:8.0-cudnn5-devel-ubuntu14.04
+
+ARG THEANO_VERSION=master
+ARG TENSORFLOW_VERSION=1.2.1
+ARG TENSORFLOW_ARCH=gpu
+ARG KERAS_VERSION=1.0.8
+ARG CAFFE_VERSION=master
+ARG ANACONDA_VERSION=Miniconda2
+
+## remove broken cuda links 
+RUN rm /etc/apt/sources.list.d/cuda.list && \
+	rm /etc/apt/sources.list.d/nvidia-ml.list
+
+## tensorflow unable to find libcupti.so.8.0
+ENV LD_LIBRARY_PATH=/usr/local/cuda/extras/CUPTI/lib64/:${LD_LIBRARY_PATH}
+
+## install basic dependencies
+RUN apt-get update && apt-get install -y \
+	curl \
+    git \
+    g++ \
+    libssl-dev \
+    software-properties-common \
+    sudo \
+    wget
+
+RUN wget https://repo.anaconda.com/miniconda/Miniconda2-latest-Linux-x86_64.sh \
+    && bash Miniconda2-latest-Linux-x86_64.sh -b \
+    && rm -f Miniconda2-latest-Linux-x86_64.sh
+ENV PATH="/root/miniconda2/bin:${PATH}"
+
+## Required by theano
+RUN conda install numpy cmake Cython
+RUN python -m pip install msgpack pydot-ng parameterized mako
+
+## Dependencies of caffe
+RUN apt-get update && apt-get install -y \
+		libgflags-dev \
+		libgoogle-glog-dev \
+		libleveldb-dev \
+		liblmdb-dev \
+		&& \
+	apt-get clean && \
+	apt-get autoremove && \
+	rm -rf /var/lib/apt/lists/*
+
+RUN conda install -c intel mkl boost=1.61.0
+RUN conda install -c conda-forge protobuf=3.2.0 hdf5 openblas
+RUN python -m pip install --upgrade msgpack python-dateutil pytest scikit-image
+RUN conda install -c mvn libsnappy
+## install opencv3 caffe doesnot support opencv 4
+RUN conda install -c menpo opencv3
+
+RUN git clone https://github.com/Theano/libgpuarray.git
+RUN cd libgpuarray && git checkout tags/v0.7.6 -b v0.7.6
+RUN cd libgpuarray && mkdir Build && cd Build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make && make install
+RUN cd libgpuarray && python setup.py build && python setup.py install 
+RUN ldconfig
+
+# Install Theano
+RUN pip --no-cache-dir install git+git://github.com/Theano/Theano.git@${THEANO_VERSION}
+
+## set theano default to cuda
+ENV THEANO_FLAGS=mode=FAST_RUN,device=cuda,floatX=float32
+
+#Install tensorflow
+RUN pip --no-cache-dir install https://storage.googleapis.com/tensorflow/linux/${TENSORFLOW_ARCH}/tensorflow_${TENSORFLOW_ARCH}-${TENSORFLOW_VERSION}-cp27-none-linux_x86_64.whl
+
+RUN git clone https://github.com/keras-team/keras.git
+RUN cd keras && git checkout ${KERAS_VERSION} && python setup.py install
+
+#CuDNN installation cudnn6 for caffe
+RUN wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1404/x86_64/libcudnn6_6.0.21-1+cuda8.0_amd64.deb && \
+	wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1404/x86_64/libcudnn6-dev_6.0.21-1+cuda8.0_amd64.deb
+RUN yes | dpkg -i ./libcudnn6_6.0.21-1+cuda8.0_amd64.deb && \
+	yes | dpkg -i ./libcudnn6-dev_6.0.21-1+cuda8.0_amd64.deb
+RUN apt-get update && apt-get install -y libcudnn6-dev
+RUN rm libcudnn6_6.0.21-1+cuda8.0_amd64.deb && \
+	rm libcudnn6-dev_6.0.21-1+cuda8.0_amd64.deb
+
+RUN git clone https://github.com/BVLC/caffe.git /root/caffe
+
+RUN cd /root/caffe && mkdir build && cd build && \
+	cmake -DPYTHON_INCLUDE_DIR=/root/miniconda2/include/python2.7 \
+	-DPYTHON_INCLUDE_DIR2=/root/miniconda2/include/python2.7 \
+	-DPYTHON_LIBRARY=/root/miniconda2/lib/libpython2.7.so \
+	-Dpython_version=2 \
+	-DUSE_CUDNN=1 \
+	-DBLAS=Open \
+	..  && \
+	make -j"$(nproc)" all && \
+	make install
+
+# Set up Caffe environment variables
+ENV CAFFE_ROOT=/root/caffe
+ENV PYCAFFE_ROOT=$CAFFE_ROOT/python
+ENV PYTHONPATH=$PYCAFFE_ROOT:$PYTHONPATH \
+	PATH=$CAFFE_ROOT/build/tools:$PYCAFFE_ROOT:$PATH
+RUN echo "$CAFFE_ROOT/build/lib" >> /etc/ld.so.conf.d/caffe.conf && ldconfig
+
+## latest toranado raises isuue with jupyter
+RUN conda install tornado=4.5.3
+RUN conda install -c conda-forge notebook
+
+# Set up notebook config
+COPY jupyter_notebook_config.py /root/.jupyter/
+
+# Jupyter has issues with being run directly: https://github.com/ipython/ipython/issues/7062
+COPY run_jupyter.sh /root/
+
+RUN mkdir .keras
+COPY keras.json /.keras
+
+# Expose Ports for TensorBoard (6006), Ipython (8888)
+EXPOSE 6006 8888
+
+WORKDIR "/root"
+CMD ["/bin/bash"]

@@ -1,0 +1,65 @@
+FROM 1dd1848191be
+
+
+RUN wget https://repo.anaconda.com/archive/Anaconda3-4.2.0-Linux-x86_64.sh \
+    && bash Anaconda3-4.2.0-Linux-x86_64.sh -b \
+    && rm -f Anaconda3-4.2.0-Linux-x86_64.sh
+ENV PATH="/root/anaconda3/bin:${PATH}"
+
+# change default python environment to 3.5 & update to latest compatible versions
+RUN conda install -y python=3.5
+RUN conda update conda anaconda
+
+## Dependencies of caffe and torch ## guess not needed after anaconda
+RUN apt-get update && apt-get install -y \
+		libgflags-dev \
+		libgoogle-glog-dev \
+		libsnappy-dev \
+		&& \
+	apt-get clean && \
+	apt-get autoremove && \
+	rm -rf /var/lib/apt/lists/*
+
+RUN conda install boost=1.61.0
+#RUN conda install -c probcomp libprotobuf=2.6.1
+RUN conda install -c anaconda protobuf=3.2.0
+RUN python -m pip install pytest
+RUN git clone https://github.com/BVLC/caffe.git /root/caffe
+RUN python -m pip install --upgrade msgpack python-dateutil
+
+RUN cd /root/caffe && git pull origin master
+RUN conda install cmake
+RUN conda install -c anaconda hdf5
+RUN apt-get update && apt-get install -y liblmdb-dev \
+    libleveldb-dev
+RUN conda install -c anaconda openblas
+RUN apt-get purge -y libopencv-dev
+RUN conda install -c menpo opencv3
+
+RUN add-apt-repository ppa:ubuntu-toolchain-r/test
+RUN apt-get update && apt-get install -y gcc-5 g++-5
+
+# assign higher priority to gcc-5 caffe uses gcc-5
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 100 && \
+	update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 75
+
+RUN update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-5 100 && \
+	update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.8 75
+ENV PATH=/usr/lib/x86_64-linux-gnu:$PATH
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+RUN cd /root/caffe && mkdir build && cd build && \
+	cmake -DPYTHON_INCLUDE_DIR=/root/anaconda3/include/python3.5m \
+	-DPYTHON_INCLUDE_DIR2=/root/anaconda3/include/python3.5m \
+	-DPYTHON_LIBRARY=/root/anaconda3/lib/libpython3.5m.so \
+	-Dpython_version=3 \
+	-DUSE_CUDNN=1 \
+	-DBLAS=Open \
+	..  && \
+	make -j"$(nproc)" all && \
+	make install
+# Set up Caffe environment variables
+ENV CAFFE_ROOT=/root/caffe
+ENV PYCAFFE_ROOT=$CAFFE_ROOT/python
+ENV PYTHONPATH=$PYCAFFE_ROOT:$PYTHONPATH \
+	PATH=$CAFFE_ROOT/build/tools:$PYCAFFE_ROOT:$PATH
+RUN echo "$CAFFE_ROOT/build/lib" >> /etc/ld.so.conf.d/caffe.conf && ldconfig

@@ -1,0 +1,12 @@
+FROM 9714d1f68c4e
+
+RUN pip --no-cache-dir install git+git://github.com/Theano/Theano.git@${master}
+
+# Install lasagne
+RUN pip --no-cache-dir install git+git://github.com/Lasagne/Lasagne.git@${master}
+
+## install pylearn2
+RUN git clone git://github.com/thomkallor/pylearn2.git && \
+     cd pylearn2 && \
+     python setup.py develop && \
+	 mkdir data

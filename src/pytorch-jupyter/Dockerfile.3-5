@@ -1,0 +1,235 @@
+FROM nvidia/cuda:8.0-cudnn6-devel-ubuntu14.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG THEANO_VERSION=rel-0.8.2
+ARG TENSORFLOW_VERSION=0.6.0
+ARG TENSORFLOW_ARCH=gpu
+ARG KERAS_VERSION=1.2.0
+ARG LASAGNE_VERSION=v0.1
+ARG TORCH_VERSION=latest
+ARG CAFFE_VERSION=master
+ARG PYTORCH_VERSION=0.3.0
+ARG ANACONDA_VERSION=Anaconda3-4.2.0
+
+## install basic dependencies
+RUN apt-get update && apt-get install -y \
+	curl \
+    git \
+    g++ \
+    libssl-dev \
+    software-properties-common \
+    sudo \
+    wget
+
+## remove broken cuda links 
+RUN rm /etc/apt/sources.list.d/cuda.list && \
+	rm /etc/apt/sources.list.d/nvidia-ml.list
+
+# conda required for pytorch installation
+# see https://docs.anaconda.com/anaconda/packages/oldpkglists/ to get compatibility with python x.x versions
+RUN wget https://repo.anaconda.com/archive/${ANACONDA_VERSION}-Linux-x86_64.sh \
+    && bash Anaconda3-4.2.0-Linux-x86_64.sh -b \
+    && rm -f Anaconda3-4.2.0-Linux-x86_64.sh
+ENV PATH="/root/anaconda3/bin:${PATH}"
+
+# change default python environment to 3.5 & update to latest compatible versions
+# RUN conda install -y python=3.5
+# RUN conda update conda anaconda
+
+## install opencv3 caffe doesnot support opencv 4
+RUN conda install -c menpo opencv3
+
+## pytorch dependencies
+RUN conda install -y numpy ninja pyyaml mkl setuptools cmake cffi mkl-include
+
+# Add LAPACK support for the GPU
+RUN conda install -c soumith magma-cuda80
+
+## pytorch installation
+RUN git clone https://github.com/pytorch/pytorch.git
+RUN cd pytorch && git checkout "v$PYTORCH_VERSION"
+RUN cd pytorch && git submodule sync && git submodule update --init --recursive
+RUN python -m pip install pathlib
+RUN export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
+RUN cd pytorch && python setup.py install
+RUN rm -rf pytorch
+
+## can be used if torchvision is needed
+## RUN python -m pip install torchvision==0.1.9
+
+## Dependencies of caffe and torch
+RUN apt-get update && apt-get install -y \
+		libgflags-dev \
+		libgoogle-glog-dev \
+		libleveldb-dev \
+		liblmdb-dev \
+		&& \
+	apt-get clean && \
+	apt-get autoremove && \
+	rm -rf /var/lib/apt/lists/*
+
+RUN conda install -c intel boost=1.61.0
+RUN conda install -c conda-forge protobuf=3.2.0 hdf5 openblas
+RUN python -m pip install --upgrade msgpack python-dateutil pytest
+RUN conda install -c mvn libsnappy
+
+# Install Torch
+RUN git clone --recursive https://github.com/torch/distro.git /root/torch && \
+	cd /root/torch && \
+	bash install-deps && \
+	yes | bash ./install.sh
+	
+# Export the LUA evironment variables manually
+ENV LUA_PATH='/root/.luarocks/share/lua/5.1/?.lua;/root/.luarocks/share/lua/5.1/?/init.lua;/root/torch/install/share/lua/5.1/?.lua;/root/torch/install/share/lua/5.1/?/init.lua;./?.lua;/root/torch/install/share/luajit-2.1.0-beta1/?.lua;/usr/local/share/lua/5.1/?.lua;/usr/local/share/lua/5.1/?/init.lua' \
+	LUA_CPATH='/root/.luarocks/lib/lua/5.1/?.so;/root/torch/install/lib/lua/5.1/?.so;./?.so;/usr/local/lib/lua/5.1/?.so;/usr/local/lib/lua/5.1/loadall.so' \
+	PATH=/root/torch/install/bin:$PATH \
+	LD_LIBRARY_PATH=/root/torch/install/lib:$LD_LIBRARY_PATH \
+	DYLD_LIBRARY_PATH=/root/torch/install/lib:$DYLD_LIBRARY_PATH
+ENV LUA_CPATH='/root/torch/install/lib/?.so;$LUA_CPATH'
+
+# Install the latest versions of nn, cutorch, cunn, cuDNN bindings and iTorch
+RUN luarocks install nn && \
+	luarocks install cutorch && \
+	luarocks install cunn && \
+    luarocks install loadcaffe
+
+# Add SNI support to Python
+# install useful packages if not present
+RUN python -m pip install \
+		pyopenssl \
+		ndg-httpsclient \
+		pyasn1 \
+		Cython \
+		path.py \
+		Pillow \
+		jupyter \
+		pygments \
+		sphinx \
+        wheel \
+        scikit-image
+
+RUN cd /root && git clone https://github.com/soumith/cudnn.torch.git && cd cudnn.torch && \
+	git checkout R4 && \
+	luarocks make
+
+# Install the latest version of iTorch and its dependencies
+RUN	luarocks install lbase64 && \
+	luarocks install luacrypto && \
+	luarocks install uuid && \
+	luarocks install lzmq
+
+RUN	cd /root && git clone https://github.com/facebook/iTorch.git && \
+	cd iTorch && \
+	luarocks make
+
+## Required by theano
+RUN python -m pip install msgpack pydot-ng parameterized mako
+
+RUN git clone https://github.com/Theano/libgpuarray.git
+RUN cd libgpuarray && git checkout tags/v0.7.6 -b v0.7.6
+RUN cd libgpuarray && mkdir Build && cd Build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make && make install
+RUN cd libgpuarray && python setup.py build && python setup.py install 
+RUN ldconfig
+
+# Install Theano
+RUN pip --no-cache-dir install git+git://github.com/Theano/Theano.git@${THEANO_VERSION}
+
+## set theano default to cuda
+ENV THEANO_FLAGS=mode=FAST_RUN,device=cuda,floatX=float32
+
+# Install lasagne
+RUN pip --no-cache-dir install git+git://github.com/Lasagne/Lasagne.git@${master}
+
+## install pylearn2
+RUN git clone git://github.com/lisa-lab/pylearn2.git && \
+     cd pylearn2 && \
+     python setup.py develop && \
+	 mkdir data
+
+## data path for pylearn
+ENV PYLEARN2_DATA_PATH=/root/pylearn2/data
+
+RUN git clone https://github.com/BVLC/caffe.git /root/caffe
+
+RUN cd /root/caffe && mkdir build && cd build && \
+	cmake -DPYTHON_INCLUDE_DIR=/root/anaconda3/include/python3.5m \
+	-DPYTHON_INCLUDE_DIR2=/root/anaconda3/include/python3.5m \
+	-DPYTHON_LIBRARY=/root/anaconda3/lib/libpython3.5m.so \
+	-Dpython_version=3 \
+	-DUSE_CUDNN=1 \
+	-DBLAS=Open \
+	..  && \
+	make -j"$(nproc)" all && \
+	make install
+
+# Set up Caffe environment variables
+ENV CAFFE_ROOT=/root/caffe
+ENV PYCAFFE_ROOT=$CAFFE_ROOT/python
+ENV PYTHONPATH=$PYCAFFE_ROOT:$PYTHONPATH \
+	PATH=$CAFFE_ROOT/build/tools:$PYCAFFE_ROOT:$PATH
+RUN echo "$CAFFE_ROOT/build/lib" >> /etc/ld.so.conf.d/caffe.conf && ldconfig
+
+## install cuda 7.0 and cudnn6.5 for tensorflow
+RUN wget http://developer.download.nvidia.com/compute/cuda/7_0/Prod/local_installers/rpmdeb/cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+RUN yes | dpkg -i ./cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+RUN apt-get update && apt-get install -y cuda-toolkit-7-0
+RUN rm cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+ENV LD_LIBRARY_PATH=/usr/local/cuda-7.0/lib64:$LD_LIBRARY_PATH
+
+RUN git clone https://github.com/thomkallor/cudnn-6.5.git /root/cudnn-6.5
+ENV LD_LIBRARY_PATH=/root/cudnn-6.5:$LD_LIBRARY_PATH
+
+## require bazel 0.1.1 for tensorflow build
+## use if you have to build from source
+## build flaky and very long not recommended use wheel file if available
+# RUN wget https://github.com/bazelbuild/bazel/releases/download/0.1.1/bazel-0.1.1-installer-linux-x86_64.sh
+# RUN add-apt-repository ppa:openjdk-r/ppa
+# RUN apt-get update && apt-get install -y \
+#     bash-completion \
+#     openjdk-8-jdk \
+#     zip \
+#     unzip \
+#     swig 
+# RUN sudo bash ./bazel-0.1.1-installer-linux-x86_64.sh
+# RUN rm ./bazel-0.1.1-installer-linux-x86_64.sh
+
+##configure tensorflow
+# RUN git clone https://github.com/thomkallor/tensorflow.git
+# RUN cd tensorflow && git checkout "v$TENSORFLOW_VERSION"
+# RUN cd tensorflow &&  git submodule update --init --recursive
+
+# ## link no longer exists had to cahe in manually
+# RUN wget http://www.ijg.org/files/jpegsrc.v9a.tar.gz && \
+# 	wget https://sourceforge.net/projects/libpng/files/libpng12/older-releases/1.2.53/libpng-1.2.53.tar.gz
+# RUN mkdir --parents /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/jpeg_archive && \
+# 	mkdir --parents /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/png_archive
+# RUN cp jpegsrc.v9a.tar.gz /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/jpeg_archive && \
+# 	cp libpng-1.2.53.tar.gz /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/png_archive
+# RUN rm jpegsrc.v9a.tar.gz && rm libpng-1.2.53.tar.gz
+# # not needed
+# RUN cd tensorflow && git pull origin "v$TENSORFLOW_VERSION"
+# COPY tfsettings.txt /root
+# RUN cd tensorflow && cat /root/tfsettings.txt | ./configure
+
+# RUN cd tensorflow && bazel build --verbose_failures --local_resources 4096,4.0,1.0 -c opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
+
+# RUN cd tensorflow && bazel-bin/tensorflow/tools/pip_package/build_pip_package /tmp/tensorflow_pkg
+# RUN python -m pip install "/tmp/tensorflow_pkg/tensorflow-0.6.0-py3-none-any.whl"
+
+RUN git clone https://github.com/thomkallor/tensorflow-0.6.0-py3.5.git
+RUN cd tensorflow-0.6.0-py3.5 && python -m pip install tensorflow-0.6.0-py3-none-any.whl
+RUN rm -rf tensorflow-0.6.0-py3.5
+
+# Set up notebook config
+COPY jupyter_notebook_config.py /root/.jupyter/
+
+# Jupyter has issues with being run directly: https://github.com/ipython/ipython/issues/7062
+COPY run_jupyter.sh /root/
+
+# Expose Ports for TensorBoard (6006), Ipython (8888)
+EXPOSE 6006 8888
+
+WORKDIR "/root"
+CMD ["/bin/bash"]

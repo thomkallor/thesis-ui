@@ -1,0 +1,7 @@
+
+    <mat-radio-group [value]="versionSelected">
+        <span class="python__label">Python Version :</span>
+        <mat-radio-button class="python__radio" *ngFor="let version of pythonVersions" [value]="version" (change)="onChange($event.value)">
+            {{version}}
+        </mat-radio-button>
+    </mat-radio-group>

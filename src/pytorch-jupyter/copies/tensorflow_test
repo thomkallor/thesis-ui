@@ -1,0 +1,99 @@
+FROM ubuntu:14.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG THEANO_VERSION=rel-0.8.2
+ARG TENSORFLOW_VERSION=0.6.0
+ARG TENSORFLOW_ARCH=gpu
+ARG KERAS_VERSION=1.2.0
+ARG LASAGNE_VERSION=v0.1
+ARG TORCH_VERSION=latest
+ARG CAFFE_VERSION=master
+ARG PYTORCH_VERSION=0.3.0
+
+## install basic dependencies
+RUN apt-get update && apt-get install -y \
+	curl \
+    git \
+    g++ \
+    libssl-dev \
+    software-properties-common \
+    sudo \
+    wget
+
+## install nvidia-375-driver
+RUN add-apt-repository ppa:graphics-drivers/ppa
+RUN apt-get update && apt-get install -y nvidia-375
+
+## install cuda 7.0 and cudnn6.5 for tensorflow
+RUN wget http://developer.download.nvidia.com/compute/cuda/7_0/Prod/local_installers/rpmdeb/cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+RUN yes | dpkg -i ./cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+RUN apt-get update && apt-get install -y cuda-toolkit-7-0
+RUN rm cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+ENV LD_LIBRARY_PATH="/usr/local/cuda-7.0/lib64:$LD_LIBRARY_PATH"
+
+RUN git clone https://github.com/thomkallor/cudnn-6.5.git
+ENV LD_LIBRARY_PATH="/root/cudnn-6.5:$LD_LIBRARY_PATH"
+
+RUN add-apt-repository ppa:deadsnakes/ppa
+
+
+# RUN add-apt-repository ppa:deadsnakes/ppa
+RUN apt-get update && apt-get install -y \
+	python3.3-dev \
+	python3.3-tk \
+    python3-pip
+
+## install python 3.3
+RUN apt-get install -y python3.3
+RUN python3 --version
+
+## make python3 default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.3 100 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.4 75 && \
+	update-alternatives --install /usr/bin/python python /usr/bin/python2.7 50
+
+#RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.3 100 && \
+#    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.4 75 && \
+
+RUN python -m pip install \
+    numpy==1.10.4
+
+RUN wget https://github.com/bazelbuild/bazel/releases/download/0.1.1/bazel-0.1.1-installer-linux-x86_64.sh
+RUN add-apt-repository ppa:openjdk-r/ppa
+RUN apt-get update && apt-get install -y \
+    bash-completion \
+    openjdk-8-jdk \
+    zip \
+    unzip \
+    swig 
+RUN sudo bash ./bazel-0.1.1-installer-linux-x86_64.sh
+RUN rm ./bazel-0.1.1-installer-linux-x86_64.sh
+
+
+RUN python -m pip install six==1.10.0
+
+##notneeded
+RUN curl -sL https://deb.nodesource.com/setup_12.x | sudo -E bash -
+##notneeded
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.3 100 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.4 75
+
+##configure tensorflow
+RUN git clone https://github.com/thomkallor/tensorflow.git
+RUN cd tensorflow && git checkout "v$TENSORFLOW_VERSION" && git pull origin "v$TENSORFLOW_VERSION"
+RUN cd tensorflow &&  git submodule update --init --recursive
+RUN wget http://www.ijg.org/files/jpegsrc.v9a.tar.gz && \
+	wget https://sourceforge.net/projects/libpng/files/libpng12/older-releases/1.2.53/libpng-1.2.53.tar.gz
+RUN mkdir --parents /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/jpeg_archive && \
+	mkdir --parents /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/png_archive
+RUN cp jpegsrc.v9a.tar.gz /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/jpeg_archive && \
+	cp libpng-1.2.53.tar.gz /root/.cache/bazel/_bazel_root/68a62076e91007a7908bc42a32e4cff9/external/png_archive
+RUN rm jpegsrc.v9a.tar.gz && rm libpng-1.2.53.tar.gz
+COPY tfsettings.txt /root
+#RUN cd tensorflow && /usr/bin/python y /usr/local/cuda-7.0 /cudnn-6.5 | bash ./configure
+RUN cd tensorflow && cat /root/tfsettings.txt | ./configure
+#RUN sh -c "echo '/usr/local/cuda-7.0/lib64' >> /etc/ld.so.conf.d/nvidia.conf" && ldconfig
+RUN cd tensorflow && bazel build -c opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
+RUN cd tensorflow && bazel-bin/tensorflow/tools/pip_package/build_pip_package /tmp/tensorflow_pkg
+RUN python -m pip install "/tmp/tensorflow_pkg/tensorflow-0.6.0-cp33-cp33m-linux_x86_64.whl"

@@ -1,0 +1,47 @@
+FROM d54e9234d14a
+# Install Torch
+RUN cd torch && yes | bash ./install.sh
+
+# Export the LUA evironment variables manually
+ENV LUA_PATH='/root/.luarocks/share/lua/5.1/?.lua;/root/.luarocks/share/lua/5.1/?/init.lua;/root/torch/install/share/lua/5.1/?.lua;/root/torch/install/share/lua/5.1/?/init.lua;./?.lua;/root/torch/install/share/luajit-2.1.0-beta1/?.lua;/usr/local/share/lua/5.1/?.lua;/usr/local/share/lua/5.1/?/init.lua' \
+	LUA_CPATH='/root/.luarocks/lib/lua/5.1/?.so;/root/torch/install/lib/lua/5.1/?.so;./?.so;/usr/local/lib/lua/5.1/?.so;/usr/local/lib/lua/5.1/loadall.so' \
+	PATH=/root/torch/install/bin:$PATH \
+	LD_LIBRARY_PATH=/root/torch/install/lib:$LD_LIBRARY_PATH \
+	DYLD_LIBRARY_PATH=/root/torch/install/lib:$DYLD_LIBRARY_PATH
+ENV LUA_CPATH='/root/torch/install/lib/?.so;'$LUA_CPATH
+
+# Install the latest versions of nn, cutorch, cunn, cuDNN bindings and iTorch
+RUN luarocks install nn && \
+	luarocks install cutorch && \
+	luarocks install cunn && \
+    luarocks install loadcaffe
+
+RUN cd /root && git clone https://github.com/soumith/cudnn.torch.git && cd cudnn.torch && \
+	git checkout R4 && \
+	luarocks make
+
+# Install the latest version of iTorch and its dependencies
+
+RUN apt-get update && apt-get install -y libssl-dev
+
+RUN luarocks install lbase64 && \
+	luarocks install luacrypto && \
+	luarocks install uuid && \
+	luarocks install lzmq
+
+
+RUN	cd /root && git clone https://github.com/facebook/iTorch.git && \
+	cd iTorch && \
+	luarocks make
+
+RUN wget http://developer.download.nvidia.com/compute/cuda/7_0/Prod/local_installers/rpmdeb/cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+
+RUN yes | dpkg -i ./cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+
+RUN apt-get update && apt-get install -y cuda-toolkit-7-0
+
+RUN rm cuda-repo-ubuntu1410-7-0-local_7.0-28_amd64.deb
+ENV LD_LIBRARY_PATH="/usr/local/cuda-7.0/lib64:$LD_LIBRARY_PATH"
+
+RUN git clone https://github.com/thomkallor/cudnn-6.5.git
+ENV LD_LIBRARY_PATH="/root/cudnn-6.5:$LD_LIBRARY_PATH"

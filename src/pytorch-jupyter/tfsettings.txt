@@ -1,0 +1,4 @@
+/root/anaconda3/bin/python
+y 
+/usr/local/cuda-7.0 
+/cudnn-6.5

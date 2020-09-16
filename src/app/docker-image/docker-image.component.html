@@ -1,0 +1,17 @@
+<mat-accordion multi>
+    <mat-expansion-panel *ngFor="let image of template;">
+        <mat-expansion-panel-header>
+            <mat-panel-title class="width-25">
+                {{image.name}}
+            </mat-panel-title>
+            <mat-panel-description class="width-75">
+                <span *ngFor="let package of image.packages; let i=index;">
+                    <span *ngIf="i==image.packages.length-1; then thenBlock else elseBlock"></span>
+                        <ng-template #thenBlock>{{package.value}}</ng-template>
+                        <ng-template #elseBlock>{{package.value+","}}&nbsp;</ng-template>
+                </span>
+            </mat-panel-description>
+        </mat-expansion-panel-header>
+        <app-package-form [pythonVersions]="image.pythonVersions" [packages]="image.packages" [year]="image.year"></app-package-form>
+    </mat-expansion-panel>
+</mat-accordion>

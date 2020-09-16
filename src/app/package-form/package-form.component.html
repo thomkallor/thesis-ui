@@ -1,0 +1,7 @@
+<app-python-radiobutton [pythonVersions]="pythonVersions" [versionSelected]="versionSelected" (changeVersion)="changeVersion($event)"></app-python-radiobutton>
+<div class="package__form--check" *ngFor="let package of packages;">
+    <app-package-checkbox [name]="package.name" [checked]="package.checked" [value]="package.value" (toggleStatus)="toggleStatus($event)"></app-package-checkbox>
+</div>
+<div class="margin-10">
+    <button mat-raised-button color="primary" (click)="onGenerate()" > Generate </button>
+</div>
